@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cancasexl-linux-tests"
+version = "0.5.34"
+description = "Hardware tests and development support for the CANcase XL Linux driver"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+usb = ["pyusb>=1.2"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

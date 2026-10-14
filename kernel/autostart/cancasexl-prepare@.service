@@ -1,0 +1,15 @@
+[Unit]
+Description=Prepare CANcase XL firmware and kernel interfaces (%f)
+After=%i.device
+# Firmware preparation changes USB configuration. Do not use BindsTo here:
+# transient device-unit inactivity must not terminate the firmware loader.
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/cancasexl-autostart/prepare.sh --device %f
+TimeoutStartSec=90
+TimeoutStopSec=5
+Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin
+UMask=0077
+# No RemainAfterExit: the service can run again after unplug/replug.
+# Do not enable manually. The USB device's SYSTEMD_WANTS starts this template.

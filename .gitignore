@@ -1,0 +1,36 @@
+# Build products
+*.o
+*.ko
+*.ko.*
+*.mod
+*.mod.c
+*.cmd
+Module.symvers
+modules.order
+.tmp_versions/
+kernel/autostart/firmware
+kernel/autostart/report-export
+# Python environments and caches
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+# Recorded traffic, reports and device exports must stay outside this repository
+*.log
+*.json
+*.jsonl
+*.csv
+*.pcap
+*.pcapng
+*.blf
+*.asc
+*.vlurep
+*.vlupd
+*.zip
+*.tar
+*.gz
+logs/
+reports/
+captures/

@@ -1,0 +1,2 @@
+# Empty instance: systemd supplies the escaped sysfs path (systemd.device).
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1248", ATTR{idProduct}=="1001", TAG+="systemd", ENV{SYSTEMD_WANTS}+="cancasexl-prepare@.service"

@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# Cached probe-time metadata only. No USB access, no sudo, no Python.
+set -euo pipefail
+json=0
+licenses=0
+serial_filter=''
+export_prefix=''
+while (( $# )); do
+ case "$1" in
+  --json) json=1; shift ;;
+  --licenses) licenses=1; shift ;;
+  --export)
+   [[ $# -ge 2 && -n $2 ]] || { echo "Missing output prefix" >&2; exit 2; }
+   export_prefix=$2; shift 2 ;;
+  --serial)
+   [[ $# -ge 2 && $2 =~ ^[0-9]{1,10}$ ]] || { echo 'Invalid serial number' >&2; exit 2; }
+   printf -v serial_filter '%06d' "$((10#$2))"
+   shift 2 ;;
+  --help|-h) echo 'cancasexl-info [--serial NUMBER] [--licenses] [--json] [--export PREFIX]'; exit 0 ;;
+  *) echo "Unknown option: $1" >&2; exit 2 ;;
+ esac
+done
+if [[ -n $export_prefix ]]; then
+ ((json==0)) || { echo '--export writes its own JSON file; omit --json.' >&2; exit 2; }
+ exporter="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/report-export"
+ [[ -x $exporter ]] || { echo 'Exporter missing; rerun install-autostart.sh.' >&2; exit 1; }
+ args=("$export_prefix")
+ [[ -z $serial_filter ]] || args+=("$serial_filter")
+ exec "$exporter" "${args[@]}"
+fi
+# Override is for offline fixture tests; only files are read.
+root=${CANCASEXL_NET_SYSFS:-/sys/class/net}
+quote() {
+ local s=$1
+ s=${s//\\/\\\\}; s=${s//\"/\\\"}
+ s=${s//$'\n'/\\n}; s=${s//$'\r'/\\r}; s=${s//$'\t'/\\t}
+ printf '"%s"' "$s"
+}
+license_name() {
+ case "$1" in
+  0x001) printf 'CANalyzer' ;;
+  0x00C) printf 'CANape >= 5.6' ;;
+  0x025) printf 'Application DENalyzer PRO' ;;
+  0x02C) printf 'CAN for DENalyzer PRO' ;;
+  0x061) printf 'CANape >= 8.0 / CANdito >= 4.0' ;;
+  *) printf 'Unknown license' ;;
+ esac
+}
+rows=()
+for net in "$root"/*; do
+ info=$net/cancasexl
+ [[ -d $info ]] || continue
+ # Reading inside a subshell makes unplug races fail this entire row.
+ if row=$(
+  set -e
+  serial=$(cat "$info/serial") || exit 1
+  [[ -z $serial_filter || $serial == "$serial_filter" ]] || exit 3
+  article=$(cat "$info/article") || exit 1; channel=$(cat "$info/channel") || exit 1
+  firmware=$(cat "$info/firmware_version") || exit 1; piggy=$(cat "$info/piggy_type") || exit 1
+  piggy_name=$(cat "$info/piggy_name") || exit 1
+  initial=$(cat "$info/transceiver_state_initial") || exit 1
+  device=$(readlink -f "$net/device") || exit 1
+  [[ -d $device ]] || exit 1
+  usb_path=${device##*/}; usb_path=${usb_path%:*}
+  license_ids=()
+  license_status=unavailable
+  if (( licenses )) && [[ -f $info/licenses ]]; then
+   raw=$(cat "$info/licenses") || exit 1
+   if [[ $raw != unavailable ]]; then
+    license_status=verified
+    read -r -a license_ids <<< "$raw" || true
+    for id in "${license_ids[@]}"; do
+     [[ $id =~ ^0x[0-9A-F]{3}$ ]] || exit 1
+    done
+   fi
+  fi
+  updates=null
+  if ((licenses)) && [[ -f $info/license_updates ]]; then
+   updates=$(cat "$info/license_updates") || exit 1
+   [[ $updates =~ ^(0|[1-9][0-9]{0,4})$ ]] && ((updates <= 65535)) || exit 1
+  fi
+  oem_status=unavailable
+  oem_values=()
+  if ((licenses)) && [[ -f $info/oem_codes ]]; then
+   raw_oem=$(cat "$info/oem_codes") || exit 1
+   if [[ $raw_oem != unavailable ]]; then
+    [[ $raw_oem =~ ^[0-9a-f]{16}\ [0-9a-f]{16}$ ]] || exit 1
+    read -r -a oem_values <<< "$raw_oem"
+    oem_status=verified
+   fi
+  fi
+  if (( json )); then
+   printf '{'
+   fields=(interface "${net##*/}" serial "$serial" article "$article" channel "$channel" firmware_version "$firmware" usb_path "$usb_path" piggy_type "$piggy" piggy_name "$piggy_name" transceiver_state_initial "$initial")
+   for ((i=0; i<${#fields[@]}; i+=2)); do
+    ((i==0)) || printf ','
+    quote "${fields[i]}"; printf ':'; quote "${fields[i+1]}"
+   done
+   if (( licenses )); then
+    printf ',"license_status":'; quote "$license_status"
+    printf ',"license_source":"probe_cache","licenses":['
+    for ((j=0; j<${#license_ids[@]}; j++)); do
+     ((j==0)) || printf ','
+     printf '{"id":'; quote "${license_ids[j]}"
+     printf ',"name":'; quote "$(license_name "${license_ids[j]}")"; printf '}'
+    done
+    printf '],"oem_status":'; quote "$oem_status"
+    printf ',"updates":%s,"oem_codes":' "$updates"
+    if [[ $oem_status == verified ]]; then
+     printf '[{"pos":0,"hex":'; quote "${oem_values[0]}"
+     printf '},{"pos":8,"hex":'; quote "${oem_values[1]}"; printf '}]'
+    else printf 'null'; fi
+   fi
+   printf '}' 
+  else
+   printf '%s: SN %s | Article %s | Channel %s | Firmware %s | USB %s\n  %s (%s), initial transceiver status %s\n' "${net##*/}" "$serial" "$article" "$channel" "$firmware" "$usb_path" "$piggy_name" "$piggy" "$initial"
+   if (( licenses )); then
+    if [[ $oem_status == verified ]]; then
+     printf '  OEM masks (checksum verified): %s %s\n' "${oem_values[0]}" "${oem_values[1]}"
+    else printf '  OEM masks: unavailable.\n'; fi
+    if [[ $updates == null ]]; then printf '  License update count: unavailable.\n'
+    else printf '  License update count: %s\n' "$updates"; fi
+    if [[ $license_status == unavailable ]]; then
+     printf '  Licenses: unavailable (load the updated module or check the journal).\n'
+    elif ((${#license_ids[@]}==0)); then
+     printf '  Licenses: no bits set (checksum verified).\n'
+    else
+     printf '  Device licenses (read at initialization, checksum verified):\n'
+     for id in "${license_ids[@]}"; do printf '    %s | %s\n' "$id" "$(license_name "$id")"; done
+    fi
+   fi
+  fi
+ ) 2>/dev/null; then
+  rows+=("$row")
+ else
+  status=$?
+  if ((status!=3)); then echo "Incomplete information for ${net##*/} or device removed; query again." >&2; exit 1; fi
+ fi
+done
+if ((json)); then
+ printf '{"interfaces":['
+ for ((i=0; i<${#rows[@]}; i++)); do
+  ((i==0)) || printf ','
+  printf '%s' "${rows[i]}"
+ done
+ printf ']}\n'
+elif ((${#rows[@]})); then
+ printf '%s\n' "${rows[@]}"
+else
+ echo 'No matching CANcase interfaces with device information found.'
+fi

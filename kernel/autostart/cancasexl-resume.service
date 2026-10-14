@@ -1,0 +1,10 @@
+[Unit]
+Description=Restore CANcase XL firmware after suspend
+After=systemd-suspend.service
+ConditionPathExists=/run/cancasexl-suspended
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/cancasexl-autostart/resume.sh
+TimeoutStartSec=180
+UMask=0077

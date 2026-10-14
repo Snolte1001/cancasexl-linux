@@ -44,6 +44,9 @@ sudo ip link set can123456_1 type can bitrate 500000
 sudo ip link set can123456_2 type can bitrate 500000
 sudo ip link set can123456_1 up
 sudo ip link set can123456_2 up
+```
+Usage in candump:
+```sh
 candump can123456_1 can123456_2
 ```
 

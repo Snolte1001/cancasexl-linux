@@ -107,7 +107,6 @@ A full kernel build is unnecessary; matching kernel headers are sufficient.
 ## Firmware and licensing
 
 Source files retain their SPDX license identifiers. The bundled RAM firmware is a separate Vector binary and is not covered by the source-code license.
-This repository does not establish permission to redistribute that binary publicly.
 Alternatively, supply the supported original driver file to the installer:
 
 ```sh

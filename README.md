@@ -74,13 +74,17 @@ The export command creates a `.vlurep` report and a plain-text `.json` file outs
 These describe cached probe-time data. They do not install or modify licenses.
 The initial transceiver status is not a live status measurement.
 
-## Diagnostics and removal
+## Diagnostics
 
 ```sh
 cat /sys/module/cancasexl/version
 dkms status -m cancasexl
 sudo journalctl -b -u 'cancasexl-prepare@*' --no-pager -n 60
 sudo dmesg --level=err,warn
+```
+## Removal
+
+```sh
 sudo bash kernel/uninstall-autostart.sh
 ```
 

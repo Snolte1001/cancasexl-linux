@@ -8,8 +8,7 @@ Kernel module version: **0.1.15**. Firmware: **8.7.16**.
 - `main`: kernel driver, C firmware loader, installation support and documentation.
 - `testing`: the same driver plus Python hardware tests and development support.
 
-No recorded traffic, device dumps, test reports or logs are stored in this repository.
-Python is not required to install or run the kernel driver.
+Python is not required to install or run the kernel driver,just to run the test scripts.
 
 ## Features
 

@@ -3,6 +3,9 @@
 Experimental native SocketCAN driver for the Vector CANcase XL (USB 1248:1001).
 Kernel module version: **0.1.15**. Firmware: **8.7.16**.
 
+This device has been marked as end-of-life by the manufacturer and is no longer supported in newer versions of CANalyzer, etc. 
+However, there are still many of these devices in use that can be given a new lease on life with SocketCAN on Linux using this driver. (Windows drivers for Python via XL-API are also available.) 
+
 ## Branches
 
 - `main`: kernel driver, C firmware loader, installation support and documentation.

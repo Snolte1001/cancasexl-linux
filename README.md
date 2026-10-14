@@ -100,7 +100,10 @@ Extended-ID hardware acceptance filters and hardware timestamp support remain un
 
 Some older devices change their USB descriptor from one configuration to two after firmware loading while Linux retains the original descriptor.
 The loader detects this mismatch and stops: runtime configuration 2 cannot be selected.
-There is currently no supported workaround for that device transition in this driver, and no custom Linux kernel is required or supplied.
+There is currently no supported workaround for that device transition in this driver.
+
+Devices with low serial numbers, e.g. 01xxxx, do not work in my tests and exhibit the behavior described above. 
+Devices with serial numbers starting with 05xxxx, on the other hand, all work.
 
 Multiple-device hotplug and RTR traffic have been exercised on physical hardware, but this does not establish compatibility with every hardware revision or host controller.
 

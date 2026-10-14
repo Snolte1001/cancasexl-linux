@@ -44,3 +44,7 @@ Error tests deliberately interrupt communication and require the wiring describe
 Python transport/bridge modules are included as dependencies of the test tools, not as a replacement for the kernel driver.
 
 Always write generated results outside the repository. No recorded fixtures, traffic dumps or historical reports are included.
+
+## Hardware timestamps
+
+See [TIMESTAMPS.md](TIMESTAMPS.md) for the 0.1.16 raw RX/TX timestamp test.

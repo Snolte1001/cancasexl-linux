@@ -115,3 +115,6 @@ sudo bash kernel/install-autostart.sh /path/to/vcasexl.sys
 ```
 
 The loader verifies the input hash. Arbitrary firmware versions are not accepted.
+
+The vcasexl.sys file can be extracted from the driver package, which is available for download on the Vector website. 
+Newer versions of the driver package may no longer include this file, as the XL series has reached end of life.

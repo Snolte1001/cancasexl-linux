@@ -15,6 +15,10 @@ spec.loader.exec_module(tool)
 
 
 class TimestampTests(unittest.TestCase):
+    def test_filter_selects_standard_data_not_error_list(self):
+        self.assertEqual(tool.DATA_FILTER_MASK, 0xC00007FF)
+        self.assertEqual(tool.DATA_FILTER_MASK & 0x20000000, 0)
+
     def test_actual_c_conversion_boundaries(self):
         source = (ROOT / 'kernel/cancasexl.c').read_text()
         function = re.search(r'static u64 xl_timestamp_ns\(const u8 \*r\)\n\{.*?\n\}', source, re.S).group()

@@ -8,6 +8,8 @@ import time
 SO_TIMESTAMPING_NEW = 65
 STAMP_FLAGS = (1 << 0) | (1 << 2) | (1 << 6)  # TX_HW, RX_HW, RAW_HW
 FRAME = struct.Struct('=IB3x8s')
+# CAN_ERR_FLAG in a receive mask selects the error-only receiver list.
+DATA_FILTER_MASK = 0xC00007FF  # EFF and RTR flags plus the 11-bit identifier
 
 
 def timestamp(ancillary):
@@ -33,7 +35,7 @@ def open_socket(name):
         sock.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPING_NEW, STAMP_FLAGS)
         # Only this test's standard data identifiers; reject unrelated traffic.
         sock.setsockopt(socket.SOL_CAN_RAW, socket.CAN_RAW_FILTER,
-                        b''.join(struct.pack('=II', i, 0xE00007FF) for i in (0x650, 0x651)))
+                        b''.join(struct.pack('=II', i, DATA_FILTER_MASK) for i in (0x650, 0x651)))
         sock.bind((name,))
         sock.setblocking(False)
         return sock

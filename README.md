@@ -11,7 +11,7 @@ However, there are still many of these devices in use that can be given a new le
 - `main`: kernel driver, C firmware loader, installation support and documentation.
 - `testing`: the same driver plus Python hardware tests and development support.
 
-Python is not required to install or run the kernel driver,just to run the test scripts.
+Python is not required to install or run the kernel driver, just to run the test scripts in testing Branch.
 
 ## Features
 

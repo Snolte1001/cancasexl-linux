@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Experimental runtime-only CANcase XL driver, firmware 8.7.16.
  * USB protocol derived from this project's validated Python implementation.
- * No verified bus-off/restart, FD or silent mode yet.
+ * Bus-off restart requires hardware validation; no FD or silent mode yet.
  */
 #include <linux/module.h>
 #include <linux/usb.h>
@@ -44,6 +44,7 @@ struct xl_chan {
  struct sk_buff *queued;
  struct can_frame sent;
  bool active, pending;
+ bool closing; /* serialized with restart and RX by io */
  bool pending_can_error; /* confirmed TX-side CAN error for the pending frame */
  unsigned long deadline;
  bool diagnostic_armed;
@@ -320,7 +321,8 @@ static int diagnostic_tick(struct xl_chan *c)
 
 /* Firmware 8.7.16: Windows ASC/USB comparison, 4204 errors, 31 explicit
  * counter pairs and warning/passive status transitions. Tag 2: state/TX/RX
- * at 10/11/12; tag 4: at 11/12/13. No bus-off encoding verified.
+ * at 10/11/12; tag 4: at 11/12/13. Bus-off status 1 verified
+ * against a Windows short-circuit capture; its counter bytes are not valid.
  */
 static int decode_status(const u8 *r, enum can_state *state, u8 *tx, u8 *rx)
 {
@@ -329,6 +331,7 @@ static int decode_status(const u8 *r, enum can_state *state, u8 *tx, u8 *rx)
  case 8: *state = CAN_STATE_ERROR_ACTIVE; break;
  case 4: *state = CAN_STATE_ERROR_WARNING; break;
  case 2: *state = CAN_STATE_ERROR_PASSIVE; break;
+ case 1: *state = CAN_STATE_BUS_OFF; break;
  default: return -EPROTO; /* stop conservatively; do not guess bus-off */
  }
  *tx = r[off + 1]; *rx = r[off + 2];
@@ -364,6 +367,40 @@ static int xl_get_berr_counter(const struct net_device *net, struct can_berr_cou
  spin_unlock_irqrestore(&c->berr_lock, flags);
  return ret;
 }
+/* io held. Stop hardware before publishing bus-off to prevent unsolicited
+ * recovery and settle pending TX ownership before CAN core restart work runs.
+ * Do not publish the firmware's bus-off counter sentinel as a real counter.
+ */
+static int enter_bus_off(struct xl_chan *c)
+{
+ struct can_frame *cf = NULL;
+ struct sk_buff *skb;
+ unsigned long flags;
+ int ret;
+ if (c->can.state == CAN_STATE_BUS_OFF || !c->active || c->closing) return 0;
+ netif_tx_disable(c->net);
+ netif_carrier_off(c->net);
+ ret = stop_hw(c);
+ if (ret) return ret;
+ c->active = false;
+ c->diagnostic_armed = false;
+ cancel_tx(c);
+ c->pending_can_error = false;
+ spin_lock_irqsave(&c->berr_lock, flags);
+ c->bec_valid = false;
+ spin_unlock_irqrestore(&c->berr_lock, flags);
+ skb = alloc_can_err_skb(c->net, &cf);
+ if (!skb) { cf = NULL; c->net->stats.rx_dropped++; }
+ can_change_state(c->net, cf, CAN_STATE_BUS_OFF, CAN_STATE_ERROR_ACTIVE);
+ if (skb) {
+  c->net->stats.rx_packets++; c->net->stats.rx_bytes += CAN_ERR_DLC;
+  netif_rx(skb);
+ }
+ /* CAN core owns restart-ms timing and manual restart semantics. */
+ can_bus_off(c->net);
+ return 0;
+}
+
 static int controller_status(struct xl_chan *c, const u8 *r)
 {
  struct can_frame *cf = NULL;
@@ -371,12 +408,13 @@ static int controller_status(struct xl_chan *c, const u8 *r)
  enum can_state state;
  u8 tx, rx;
  int ret;
- if (!c->active) return 0;
+ if (!c->active || c->closing) return 0;
  ret = decode_status(r, &state, &tx, &rx);
  if (ret) {
   dev_err(&c->xl->usb->dev, "unverified controller status: %*ph\n", 24, r);
   return halt_channel(c, "unverified controller status (not classified as bus-off)");
  }
+ if (state == CAN_STATE_BUS_OFF) return enter_bus_off(c);
  if (state != c->can.state) {
   skb = alloc_can_err_skb(c->net, &cf);
   if (!skb) { cf = NULL; c->net->stats.rx_dropped++; }
@@ -397,12 +435,13 @@ static int can_error(struct xl_chan *c, const u8 *r)
  enum can_state state;
  u8 tx, rx, ecc = r[14];
  int ret;
- if (!c->active) return 0; /* late records after a confirmed stop */
+ if (!c->active || c->closing) return 0; /* late records after a confirmed stop */
  ret = decode_status(r, &state, &tx, &rx);
  if (ret) {
   dev_err(&c->xl->usb->dev, "unverified error status: %*ph\n", 24, r);
   return halt_channel(c, "unverified CAN error status (not classified as bus-off)");
  }
+ if (state == CAN_STATE_BUS_OFF) return enter_bus_off(c);
  c->can.can_stats.bus_error++;
  if (ecc & 0x20) c->net->stats.rx_errors++;
  else c->net->stats.tx_errors++;
@@ -476,7 +515,7 @@ static int record(struct xl *x, const u8 *r)
  id = get_unaligned_le32(r + 10);
  if ((id & ~CAN_EFF_FLAG) > ((id & CAN_EFF_FLAG) ? CAN_EFF_MASK : CAN_SFF_MASK)) return -EPROTO;
  if (r[15] & 0x04) id |= CAN_RTR_FLAG;
- if (!c->active) return 0;
+ if (!c->active || c->closing) return 0;
  if (r[15] & 0x01) {
   if (!c->pending || c->sent.can_id != id || c->sent.len != r[14] ||
       (!(id & CAN_RTR_FLAG) && memcmp(c->sent.data, r + 16, r[14]))) return -EPROTO;
@@ -581,7 +620,7 @@ static int worker(void *arg)
    struct xl_chan *c = netdev_priv(x->net[i]);
    struct sk_buff *skb;
    int actual;
-   if (!c->active) continue;
+   if (!c->active || c->closing) continue;
    ret = diagnostic_tick(c);
    if (ret || !c->active) continue;
    if (c->pending) {
@@ -619,7 +658,7 @@ static int worker(void *arg)
   if (fast_poll && !ret) {
    for (i = 0; i < 2; i++) {
     struct xl_chan *c = netdev_priv(x->net[i]);
-    if (!c->active) continue;
+    if (!c->active || c->closing) continue;
     spin_lock_bh(&c->txlock);
     tx_busy |= (c->pending && !c->pending_can_error) || c->queued != NULL;
     spin_unlock_bh(&c->txlock);
@@ -650,6 +689,7 @@ static int xl_open(struct net_device *net)
   if (ret) fault_device(x, ret);
  }
  if (!ret) {
+  c->closing = false;
   spin_lock_irq(&c->berr_lock);
   c->bec_valid = false;
   spin_unlock_irq(&c->berr_lock);
@@ -666,11 +706,48 @@ static int xl_open(struct net_device *net)
  if (ret) close_candev(net);
  return ret;
 }
+/* Called by CAN core for both manual and delayed bus-off restart.
+ * Never cancel restart_work here: this callback may be that work itself.
+ */
+static int xl_set_mode(struct net_device *net, enum can_mode mode)
+{
+ struct xl_chan *c = netdev_priv(net);
+ struct xl *x = c->xl;
+ int ret;
+ if (mode != CAN_MODE_START) return -EOPNOTSUPP;
+ mutex_lock(&x->io);
+ if (x->dead || x->fault) { ret = -ENODEV; goto out; }
+ if (c->closing || !netif_running(net) || c->can.state != CAN_STATE_BUS_OFF) {
+  ret = -EBUSY; goto out;
+ }
+ /* enter_bus_off already confirmed stop and released the echo slot. */
+ ret = drain(x);
+ if (!ret) ret = start_hw(c);
+ if (ret) { fault_device(x, ret); goto out; }
+ spin_lock_irq(&c->berr_lock);
+ c->bec_valid = false;
+ spin_unlock_irq(&c->berr_lock);
+ c->pending_can_error = false;
+ c->diagnostic_armed = false;
+ c->active = true;
+ c->can.state = CAN_STATE_ERROR_ACTIVE;
+ netif_wake_queue(net);
+ dev_info(&x->usb->dev, "channel %u restarted after bus-off\n", c->index + 1);
+out:
+ mutex_unlock(&x->io);
+ return ret;
+}
+
 static int xl_stop(struct net_device *net)
 {
  struct xl_chan *c = netdev_priv(net);
  struct xl *x = c->xl;
  int ret = 0;
+ /* Block new restart/notification work before waiting, without holding io. */
+ mutex_lock(&x->io);
+ c->closing = true;
+ mutex_unlock(&x->io);
+ cancel_delayed_work_sync(&c->can.restart_work);
  netif_tx_disable(net);
  mutex_lock(&x->io);
  if (!x->dead && !x->fault && c->active) ret = stop_hw(c);
@@ -1010,6 +1087,7 @@ static int xl_probe(struct usb_interface *intf, const struct usb_device_id *id)
   c->xl = x; c->net = net; c->index = i; spin_lock_init(&c->txlock);
   spin_lock_init(&c->berr_lock);
   c->can.do_get_berr_counter = xl_get_berr_counter;
+  c->can.do_set_mode = xl_set_mode;
   c->can.state = CAN_STATE_STOPPED;
   c->can.bitrate_const = rates; c->can.bitrate_const_cnt = ARRAY_SIZE(rates);
   net->ethtool_ops = &xl_ethtool_ops;
@@ -1070,4 +1148,5 @@ static struct usb_driver xl_driver = {
 module_usb_driver(xl_driver);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Experimental CANcase XL runtime-only SocketCAN driver");
-MODULE_VERSION("0.1.18");
+MODULE_VERSION("0.1.19");
+

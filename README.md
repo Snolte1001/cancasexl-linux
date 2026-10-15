@@ -1,7 +1,7 @@
 # CANcase XL Linux driver
 
 Experimental native SocketCAN driver for the Vector CANcase XL (USB 1248:1001).
-Kernel module version: **0.1.18**. Firmware: **8.7.16**.
+Kernel module version: **0.1.19**. Firmware: **8.7.16**.
 
 This device has been marked as end-of-life by the manufacturer and is no longer supported in newer versions of CANalyzer, etc. 
 However, there are still many of these devices in use that can be given a new lease on life with SocketCAN on Linux using this driver. (Windows drivers for Python via XL-API are also available.) 
@@ -72,6 +72,14 @@ candump -H can123456_1 can123456_2
 
 These are device-clock values, not UTC timestamps. Different CANcase devices are not synchronized. See [TIMESTAMPS.md](TIMESTAMPS.md) for clock semantics and validation scope.
 
+## Bus-off recovery
+
+The default `restart-ms 0` disables automatic bus-off recovery. After removing
+the fault, request manual recovery with `ip link set INTERFACE type can restart`
+or cycle down/up. Set a positive `restart-ms` while the interface is down to
+enable a delayed restart. Pending transmissions are discarded on bus-off.
+See [ERROR_MODES.md](ERROR_MODES.md) for configuration and limitations.
+
 ## Device information
 
 ```sh
@@ -104,7 +112,7 @@ DKMS needs matching kernel headers after kernel updates. Secure Boot may require
 ## Limitations
 
 This is experimental, independently developed software, not an official Vector driver.
-Classical CAN only; CAN FD is not supported. Full hardware bus-off state/counter interpretation and recovery remain unverified.
+Classical CAN only; CAN FD is not supported. Bus-off reporting, manual restart and timed restart are supported; hardware validation scope is documented in [ERROR_MODES.md](ERROR_MODES.md). Bus-off counter bytes are not exposed as valid error counters.
 By default, verified CAN errors keep the controller running. Set `isolate_can_errors=1` to stop the affected channel on its first reported CAN error. See [ERROR_MODES.md](ERROR_MODES.md) for recovery behavior, switching modes and validation scope.
 Extended-ID hardware acceptance filters remain unfinished. Hardware timestamps use raw device time; see [TIMESTAMPS.md](TIMESTAMPS.md).
 

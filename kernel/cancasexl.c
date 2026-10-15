@@ -552,6 +552,16 @@ static int drain(struct xl *x)
    return ret;
   }
   transfers++;
+  /* Both channels share this endpoint. An active peer may produce events
+   * indefinitely, especially ACK errors while this channel is stopped.
+   * Process (never discard) a bounded batch, then let the channel transition
+   * proceed. The worker resumes parsing the remaining stream under io.
+   * With no active channel, retain the strict idle/deadline check.
+   */
+  if (transfers >= 16 &&
+      (((struct xl_chan *)netdev_priv(x->net[0]))->active ||
+       ((struct xl_chan *)netdev_priv(x->net[1]))->active))
+   return 0;
  } while (time_before(jiffies, until));
  dev_err(&x->usb->dev, "drain deadline exceeded: %u transfers, last count=%u\n",
          transfers, get_unaligned_le32(x->rx));
@@ -1060,4 +1070,4 @@ static struct usb_driver xl_driver = {
 module_usb_driver(xl_driver);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Experimental CANcase XL runtime-only SocketCAN driver");
-MODULE_VERSION("0.1.17");
+MODULE_VERSION("0.1.18");

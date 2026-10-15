@@ -1,4 +1,4 @@
-# CAN error policies (0.1.17, testing)
+# CAN error policies (0.1.18, testing)
 
 The default `isolate_can_errors=0` now reports verified CAN errors and keeps the
 controller running. `isolate_can_errors=1` restores the restrictive policy: stop
@@ -55,7 +55,7 @@ Reinstalling restores the installer default (continuing mode).
 Hardware validation is pending. Use two connected, terminated channels of one
 CANcase at 500 kbit/s with no additional node providing acknowledgements.
 
-1. Verify ordinary traffic and version 0.1.17, isolation N, diagnosis 0.
+1. Verify ordinary traffic and version 0.1.18, isolation N, diagnosis 0.
 2. Stop channel 2, send one frame on channel 1 and wait at least eight seconds.
 3. Inspect channel 1 state/counters. A known TX error should not cause a driver
    stop or a global five-second timeout.
@@ -65,3 +65,9 @@ CANcase at 500 kbit/s with no additional node providing acknowledgements.
    require down/up after acknowledgements become available again.
 
 Save test outputs outside this repository. Main remains at the tested 0.1.16.
+
+## Shared RX endpoint during channel transitions
+
+Version 0.1.18 processes at most 16 RX transfers during drain while either channel remains active. It does not require the shared endpoint to become idle under continuous peer traffic/errors. Remaining events are parsed by the worker; transfers are not discarded. With both channels inactive, the strict idle check and 500 ms deadline remain in place. USB/parse failures still propagate.
+
+The preceding 0.1.17 hardware test confirmed continued ACK retries and Error-Passive at TX counter 128, but restarting the peer failed because the shared RX drain never became idle. Recovery with this correction remains to be hardware-tested.

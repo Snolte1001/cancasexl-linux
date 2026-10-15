@@ -1,7 +1,7 @@
 # CANcase XL Linux driver
 
 Experimental native SocketCAN driver for the Vector CANcase XL (USB 1248:1001).
-Kernel module version: **0.1.16**. Firmware: **8.7.16**.
+Kernel module version: **0.1.18**. Firmware: **8.7.16**.
 
 This device has been marked as end-of-life by the manufacturer and is no longer supported in newer versions of CANalyzer, etc. 
 However, there are still many of these devices in use that can be given a new lease on life with SocketCAN on Linux using this driver. (Windows drivers for Python via XL-API are also available.) 
@@ -105,7 +105,7 @@ DKMS needs matching kernel headers after kernel updates. Secure Boot may require
 
 This is experimental, independently developed software, not an official Vector driver.
 Classical CAN only; CAN FD is not supported. Full hardware bus-off state/counter interpretation and recovery remain unverified.
-The default CAN-error isolation stops the affected channel; it must not be interpreted as verified hardware bus-off reporting.
+By default, verified CAN errors keep the controller running. Set `isolate_can_errors=1` to stop the affected channel on its first reported CAN error. See [ERROR_MODES.md](ERROR_MODES.md) for recovery behavior, switching modes and validation scope.
 Extended-ID hardware acceptance filters remain unfinished. Hardware timestamps use raw device time; see [TIMESTAMPS.md](TIMESTAMPS.md).
 
 Some older devices change their USB descriptor from one configuration to two after firmware loading while Linux retains the original descriptor.

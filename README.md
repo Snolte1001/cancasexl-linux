@@ -147,3 +147,20 @@ The loader verifies the input hash. Arbitrary firmware versions are not accepted
 
 The vcasexl.sys file can be extracted from the Vector Driver Setup, which is available for download on the Vector website. 
 Newer versions of the driver package may no longer include this file, as the XL series has reached end of life.
+
+## Module option conflicts
+
+The installer checks `modprobe --showconfig` after installing its managed
+configuration and before loading the module. It rejects conflicting repeated
+options or overrides of `isolate_can_errors=0`, `diagnose_channel=0`, and
+`managed_handoff=1`. Equivalent boolean values such as 0/N and 1/Y are accepted.
+It lists configuration source lines so additional files can be corrected manually.
+External configuration files are never automatically deleted or rewritten.
+
+After loading, the installer also checks the three actual sysfs parameter values
+and unloads the module before enabling USB triggers. A mismatch stops installation
+without printing success; inspect additional modprobe files, install rules and
+kernel command-line options. Earlier installation steps may already have completed;
+resolve the conflict and rerun the installer before reconnecting devices.
+
+The driver remains version 0.1.19; this change affects installation only.

@@ -50,7 +50,7 @@ cat /sys/module/cancasexl/parameters/isolate_can_errors
 
 `Y` means restrictive; `N` means continuing. To restore continuing mode, replace
 `isolate_can_errors=1` with `isolate_can_errors=0` and repeat unload/reconnect.
-Reinstalling writes the installer default (continuing mode), but additional modprobe configuration files can override it. Inspect `modprobe --showconfig` and verify the loaded parameter after reconnecting. Automatic installer detection of conflicting options remains a TODO.
+Reinstalling writes the installer default (continuing mode), but additional modprobe configuration files can override it. Inspect `modprobe --showconfig` and verify the loaded parameter after reconnecting. The installer checks effective modprobe options and verifies loaded parameter values.
 
 ## Hardware validation
 

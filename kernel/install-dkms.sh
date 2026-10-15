@@ -2,7 +2,7 @@
 # Called by install-autostart.sh after firmware validation and USB absence check.
 set -Eeuo pipefail
 KERNEL_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-VERSION=0.1.16
+VERSION=0.1.17
 SOURCE="/usr/src/cancasexl-$VERSION"
 DEST=/opt/cancasexl-autostart
 die() { printf 'DKMS: %s\n' "$*" >&2; exit 1; }
@@ -39,7 +39,7 @@ if [[ ! -e /var/lib/dkms/cancasexl/$VERSION/source ]]; then
     dkms add -m cancasexl -v "$VERSION"
 fi
 # Build before changing installed modules. DKMS backs up a pre-existing manual
-# module as original_module. --force permits migration from the SAME 0.1.16 version.
+# module as original_module. --force permits migration from the SAME 0.1.17 version.
 dkms build -m cancasexl -v "$VERSION" -k "$(uname -r)"
 dkms install -m cancasexl -v "$VERSION" -k "$(uname -r)" --force
 depmod -a "$(uname -r)"

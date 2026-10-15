@@ -44,6 +44,7 @@ struct xl_chan {
  struct sk_buff *queued;
  struct can_frame sent;
  bool active, pending;
+ bool pending_can_error; /* confirmed TX-side CAN error for the pending frame */
  unsigned long deadline;
  bool diagnostic_armed;
  unsigned long diagnostic_deadline;
@@ -92,10 +93,10 @@ static bool handoff_allowed(struct usb_device *usb)
 module_param(fast_poll, bool, 0444);
 MODULE_PARM_DESC(fast_poll, "Avoid idle sleep while TX awaits a hardware receipt (default true)");
 
-/* Opt-in until isolated error stop/restart has been hardware validated. */
+/* Restrictive fallback: stop the affected channel on its first CAN error. */
 static bool isolate_can_errors;
 module_param(isolate_can_errors, bool, 0444);
-MODULE_PARM_DESC(isolate_can_errors, "Experimental: stop only the channel reporting a CAN error");
+MODULE_PARM_DESC(isolate_can_errors, "Restrictive mode: stop channel on CAN error; false continues verified CAN states");
 
 /* One selected channel only; observation ends three seconds after first TX/error.
  * Read-only module parameter: never a production bus-off implementation. */
@@ -281,6 +282,25 @@ static void fault_device(struct xl *x, int err)
   c->can.state = CAN_STATE_STOPPED;
  }
 }
+/* A channel-local CAN/status/TX-receipt problem is not a USB failure.
+ * Only a failed stop command escalates to the device-wide transport handler.
+ */
+static int halt_channel(struct xl_chan *c, const char *reason)
+{
+ int ret;
+ netif_tx_disable(c->net);
+ netif_carrier_off(c->net);
+ ret = stop_hw(c);
+ if (ret) return ret;
+ c->active = false;
+ cancel_tx(c);
+ c->pending_can_error = false;
+ c->can.state = CAN_STATE_STOPPED;
+ dev_warn(&c->xl->usb->dev, "channel %u stopped: %s; down/up required\n",
+          c->index + 1, reason);
+ return 0;
+}
+
 /* Called by worker with io held, independently of further RX records. */
 static int diagnostic_tick(struct xl_chan *c)
 {
@@ -355,7 +375,7 @@ static int controller_status(struct xl_chan *c, const u8 *r)
  ret = decode_status(r, &state, &tx, &rx);
  if (ret) {
   dev_err(&c->xl->usb->dev, "unverified controller status: %*ph\n", 24, r);
-  return ret;
+  return halt_channel(c, "unverified controller status (not classified as bus-off)");
  }
  if (state != c->can.state) {
   skb = alloc_can_err_skb(c->net, &cf);
@@ -381,7 +401,7 @@ static int can_error(struct xl_chan *c, const u8 *r)
  ret = decode_status(r, &state, &tx, &rx);
  if (ret) {
   dev_err(&c->xl->usb->dev, "unverified error status: %*ph\n", 24, r);
-  return ret;
+  return halt_channel(c, "unverified CAN error status (not classified as bus-off)");
  }
  c->can.can_stats.bus_error++;
  if (ecc & 0x20) c->net->stats.rx_errors++;
@@ -415,18 +435,15 @@ static int can_error(struct xl_chan *c, const u8 *r)
           "channel %u CAN error: ECC=%02x raw10-15=%*ph; isolate=%u\n",
           c->index + 1, ecc, 6, r + 10, isolate_can_errors);
  if (diagnostic_channel(c)) { diagnostic_arm(c); return 0; }
- if (!isolate_can_errors) return -EIO;
- /* Synchronize with ndo_start_xmit before canceling queued/echo SKBs.
-  * Administrative down/up is needed to start this channel again.
-  */
- netif_tx_disable(c->net);
- netif_carrier_off(c->net);
- ret = stop_hw(c);
- if (ret) return ret; /* uncertain USB command stream: global fault */
- c->active = false;
- cancel_tx(c);
- c->can.state = CAN_STATE_STOPPED;
- return 0;
+ if (!isolate_can_errors) {
+  /* Do not discard a frame which the controller can still retransmit.
+   * Keep one echo slot and backpressure until receipt or explicit down/up.
+   * RX-side errors do not explain a missing TX receipt.
+   */
+  if (c->pending && !(ecc & 0x20)) c->pending_can_error = true;
+  return 0;
+ }
+ return halt_channel(c, "restrictive CAN error policy");
 }
 /* Firmware event bytes 4..9: unsigned 48-bit little-endian 16 MHz clock.
  * Return raw device time, NOT host wall time. Both channels share this domain.
@@ -469,7 +486,7 @@ static int record(struct xl *x, const u8 *r)
   skb = c->can.echo_skb[0];
   if (skb) skb_hwtstamps(skb)->hwtstamp = ns_to_ktime(xl_timestamp_ns(r));
   c->net->stats.tx_bytes += can_get_echo_skb(c->net, 0, NULL);
-  c->pending = false;
+  c->pending = false; c->pending_can_error = false;
   c->net->stats.tx_packets++;
   netif_wake_queue(c->net);
  } else {
@@ -558,7 +575,9 @@ static int worker(void *arg)
    ret = diagnostic_tick(c);
    if (ret || !c->active) continue;
    if (c->pending) {
-    if (time_after_eq(jiffies, c->deadline)) ret = -ETIMEDOUT;
+    if (time_after_eq(jiffies, c->deadline) &&
+        (isolate_can_errors || !c->pending_can_error))
+     ret = halt_channel(c, "TX receipt timeout");
     continue;
    }
    spin_lock_bh(&c->txlock);
@@ -576,6 +595,7 @@ static int worker(void *arg)
    ret = can_put_echo_skb(skb, c->net, 0, 0);
    if (ret) { c->net->stats.tx_dropped++; break; }
    diagnostic_arm(c);
+   c->pending_can_error = false;
    c->pending = true; c->deadline = jiffies + 5 * HZ;
    ret = usb_bulk_msg(x->usb, usb_sndbulkpipe(x->usb, 3 + i), x->tx, 24, &actual, 2000);
    if (!ret && actual != 24) ret = -EIO;
@@ -591,7 +611,7 @@ static int worker(void *arg)
     struct xl_chan *c = netdev_priv(x->net[i]);
     if (!c->active) continue;
     spin_lock_bh(&c->txlock);
-    tx_busy |= c->pending || c->queued != NULL;
+    tx_busy |= (c->pending && !c->pending_can_error) || c->queued != NULL;
     spin_unlock_bh(&c->txlock);
    }
   }
@@ -628,6 +648,7 @@ static int xl_open(struct net_device *net)
   memset(c->diagnostic_errors, 0, sizeof(c->diagnostic_errors));
   if (diagnostic_channel(c))
    dev_info(&x->usb->dev, "diagnostic ch%u begin\n", c->index + 1);
+  c->pending_can_error = false;
   c->active = true; c->can.state = CAN_STATE_ERROR_ACTIVE;
   netif_carrier_on(net); netif_start_queue(net);
  }
@@ -1039,4 +1060,4 @@ static struct usb_driver xl_driver = {
 module_usb_driver(xl_driver);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Experimental CANcase XL runtime-only SocketCAN driver");
-MODULE_VERSION("0.1.16");
+MODULE_VERSION("0.1.17");

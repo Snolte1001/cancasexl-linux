@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Experimental runtime-only CANcase XL driver, firmware 8.7.16.
  * USB protocol derived from this project's validated Python implementation.
- * No bus-off/restart, FD, silent mode or hardware timestamps yet.
+ * No verified bus-off/restart, FD or silent mode yet.
  */
 #include <linux/module.h>
 #include <linux/usb.h>
@@ -12,6 +12,10 @@
 #include <linux/can/error.h>
 #include <linux/delay.h>
 #include <linux/version.h>
+#include <linux/ethtool.h>
+#include <linux/net_tstamp.h>
+#include <linux/uaccess.h>
+#include <linux/sockios.h>
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
 #include <linux/unaligned.h>
 #else
@@ -424,6 +428,19 @@ static int can_error(struct xl_chan *c, const u8 *r)
  c->can.state = CAN_STATE_STOPPED;
  return 0;
 }
+/* Firmware event bytes 4..9: unsigned 48-bit little-endian 16 MHz clock.
+ * Return raw device time, NOT host wall time. Both channels share this domain.
+ * No host anchor, per-channel offset or monotonic clamping: resets and the
+ * approximately 203.6-day wrap remain observable. Integer ns truncate 0.5 ns.
+ * The maximum 48-bit value times 125 fits comfortably in u64 and ktime_t.
+ */
+static u64 xl_timestamp_ns(const u8 *r)
+{
+ u64 ticks = (u64)get_unaligned_le32(r + 4) |
+             ((u64)get_unaligned_le16(r + 8) << 32);
+ return (ticks * 125) >> 1;
+}
+
 static int record(struct xl *x, const u8 *r)
 {
  struct xl_chan *c;
@@ -446,6 +463,11 @@ static int record(struct xl *x, const u8 *r)
  if (r[15] & 0x01) {
   if (!c->pending || c->sent.can_id != id || c->sent.len != r[14] ||
       (!(id & CAN_RTR_FLAG) && memcmp(c->sent.data, r + 16, r[14]))) return -EPROTO;
+  /* The CAN echo helper delivers requested TX timestamps to MSG_ERRQUEUE.
+   * Set the stamp before it consumes the echo skb. io protects ownership.
+   */
+  skb = c->can.echo_skb[0];
+  if (skb) skb_hwtstamps(skb)->hwtstamp = ns_to_ktime(xl_timestamp_ns(r));
   c->net->stats.tx_bytes += can_get_echo_skb(c->net, 0, NULL);
   c->pending = false;
   c->net->stats.tx_packets++;
@@ -453,6 +475,7 @@ static int record(struct xl *x, const u8 *r)
  } else {
   skb = alloc_can_skb(c->net, &cf);
   if (!skb) { c->net->stats.rx_dropped++; return 0; }
+  skb_hwtstamps(skb)->hwtstamp = ns_to_ktime(xl_timestamp_ns(r));
   cf->can_id = id; cf->len = r[14];
   if (!(id & CAN_RTR_FLAG)) memcpy(cf->data, r + 16, cf->len);
   c->net->stats.rx_packets++;
@@ -653,9 +676,44 @@ static int xl_change_mtu(struct net_device *net, int mtu)
  net->mtu = CAN_MTU;
  return 0;
 }
+/* Hardware stamps are always present. Match CAN's fixed ON/ALL policy. */
+static int xl_timestamp_ioctl(struct net_device *net, struct ifreq *ifr, int cmd)
+{
+ struct hwtstamp_config cfg = { .tx_type = HWTSTAMP_TX_ON,
+                               .rx_filter = HWTSTAMP_FILTER_ALL };
+ (void)net;
+ if (cmd == SIOCSHWTSTAMP) {
+  if (copy_from_user(&cfg, ifr->ifr_data, sizeof(cfg))) return -EFAULT;
+  if (cfg.flags) return -EINVAL;
+  if (cfg.tx_type != HWTSTAMP_TX_ON || cfg.rx_filter != HWTSTAMP_FILTER_ALL)
+   return -ERANGE;
+ } else if (cmd != SIOCGHWTSTAMP) return -EOPNOTSUPP;
+ return copy_to_user(ifr->ifr_data, &cfg, sizeof(cfg)) ? -EFAULT : 0;
+}
+static int xl_get_ts_info(struct net_device *net,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+                          struct kernel_ethtool_ts_info *info)
+#else
+                          struct ethtool_ts_info *info)
+#endif
+{
+ (void)net;
+ info->so_timestamping = SOF_TIMESTAMPING_SOFTWARE |
+  SOF_TIMESTAMPING_TX_SOFTWARE | SOF_TIMESTAMPING_RX_SOFTWARE |
+  SOF_TIMESTAMPING_TX_HARDWARE | SOF_TIMESTAMPING_RX_HARDWARE |
+  SOF_TIMESTAMPING_RAW_HARDWARE;
+ info->phc_index = -1; /* No PTP clock or host-clock synchronization. */
+ info->tx_types = BIT(HWTSTAMP_TX_ON);
+ info->rx_filters = BIT(HWTSTAMP_FILTER_ALL);
+ return 0;
+}
+static const struct ethtool_ops xl_ethtool_ops = {
+ .get_ts_info = xl_get_ts_info,
+};
 static const struct net_device_ops xl_ops = {
  .ndo_open = xl_open, .ndo_stop = xl_stop, .ndo_start_xmit = xl_xmit,
  .ndo_change_mtu = xl_change_mtu,
+ .ndo_eth_ioctl = xl_timestamp_ioctl,
 };
 /* Read metadata once, before worker/netdev registration. Queries never start CAN. */
 static int read_identity(struct xl *x)
@@ -923,6 +981,7 @@ static int xl_probe(struct usb_interface *intf, const struct usb_device_id *id)
   c->can.do_get_berr_counter = xl_get_berr_counter;
   c->can.state = CAN_STATE_STOPPED;
   c->can.bitrate_const = rates; c->can.bitrate_const_cnt = ARRAY_SIZE(rates);
+  net->ethtool_ops = &xl_ethtool_ops;
   net->netdev_ops = &xl_ops; net->flags |= IFF_ECHO;
   /* Largest uint32 serial produces a 15-character name, within IFNAMSIZ. */
   snprintf(net->name, IFNAMSIZ, "can%06u_%u", x->serial, i + 1);
@@ -980,4 +1039,4 @@ static struct usb_driver xl_driver = {
 module_usb_driver(xl_driver);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Experimental CANcase XL runtime-only SocketCAN driver");
-MODULE_VERSION("0.1.15");
+MODULE_VERSION("0.1.16");

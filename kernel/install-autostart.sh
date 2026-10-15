@@ -9,7 +9,7 @@ die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 FIRMWARE_INPUT=${1:-"$KERNEL_DIR/firmware/cancasexl-8.7.16.bin"}
 [[ -f $FIRMWARE_INPUT ]] || die 'Firmware missing; supply a SYS or verified BIN file.' 
 [[ -d /run/systemd/system ]] || die 'A running systemd instance is required.'
-for tool in ip dkms cmp cc make modinfo depmod modprobe rmmod systemctl udevadm install flock readlink; do
+for tool in grep ip dkms cmp cc make modinfo depmod modprobe rmmod systemctl udevadm install flock readlink; do
     command -v "$tool" >/dev/null || die "Missing tool: $tool"
 done
 [[ -d /lib/modules/$(uname -r)/build ]] || die 'Install matching linux-headers.'
@@ -56,9 +56,26 @@ mv -f -- "$FIRMWARE_STAGE/runtime.bin" "$DEST/cancasexl-8.7.16.bin"
 rmdir "$FIRMWARE_STAGE"
 trap - EXIT
 install -m 0644 "$KERNEL_DIR/autostart/cancasexl-autostart.conf" /etc/modprobe.d/
-# Check that module loading works before enabling the USB trigger.
+# The managed file is now installed; inspect merged options from every kmod
+# source before loading. Additional files must never silently override defaults.
+bash "$KERNEL_DIR/check-module-options.sh"
+# Verify actual loaded values too: kernel command-line options or install rules
+# may not be represented by the options lines returned by --showconfig.
 modprobe cancasexl
+option_mismatch=0
+for item in isolate_can_errors:N diagnose_channel:0 managed_handoff:Y; do
+    key=${item%%:*}
+    expected=${item#*:}
+    value=$(cat "/sys/module/cancasexl/parameters/$key" 2>/dev/null) || value=unavailable
+    if [[ $value != "$expected" ]]; then
+        printf 'Error: Loaded cancasexl parameter %s=%s; expected %s.\n' \
+            "$key" "$value" "$expected" >&2
+        option_mismatch=1
+    fi
+done
 modprobe -r cancasexl
+(( option_mismatch == 0 )) || die 'Loaded module options differ from installer defaults. Check modprobe configuration, install rules and /proc/cmdline; rerun after correction.'
+printf 'Module options verified: isolate_can_errors=N diagnose_channel=0 managed_handoff=Y\n' 
 install -m 0644 "$KERNEL_DIR/autostart/cancasexl-prepare@.service" /etc/systemd/system/
 install -m 0644 "$KERNEL_DIR/autostart/80-cancasexl-kernel.rules" /etc/udev/rules.d/
 install -m 0755 "$KERNEL_DIR/autostart/resume.sh" "$DEST/resume.sh"
@@ -73,3 +90,4 @@ printf 'Interfaces: ip -details link show type can\n'
 printf 'Both Vector channels initially remain DOWN. See README.md.\n'
 printf 'DKMS configured: rebuild on kernel updates with matching headers.\n'
 printf 'Check: dkms status -m cancasexl; modinfo -n cancasexl\n'
+

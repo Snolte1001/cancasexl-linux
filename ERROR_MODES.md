@@ -50,7 +50,7 @@ cat /sys/module/cancasexl/parameters/isolate_can_errors
 
 `Y` means restrictive; `N` means continuing. To restore continuing mode, replace
 `isolate_can_errors=1` with `isolate_can_errors=0` and repeat unload/reconnect.
-Reinstalling restores the installer default (continuing mode).
+Reinstalling writes the managed default (continuing mode). Conflicting additional options cause installation to stop; external configuration files are not automatically modified.
 
 ## Hardware validation
 

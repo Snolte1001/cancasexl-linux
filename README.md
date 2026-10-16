@@ -111,8 +111,9 @@ DKMS needs matching kernel headers after kernel updates. Secure Boot may require
 
 ## Limitations
 
-This is experimental, independently developed software, not an official Vector driver.
-Classical CAN only; CAN FD is not supported. Bus-off reporting, manual restart and timed restart are supported; hardware validation scope is documented in [ERROR_MODES.md](ERROR_MODES.md). Bus-off counter bytes are not exposed as valid error counters.
+This is experimental, independently developed software, not an official Vector driver ! 
+
+Classical CAN only; CAN FD is not supported by Hardware. Bus-off reporting, manual restart and timed restart are supported; hardware validation scope is documented in [ERROR_MODES.md](ERROR_MODES.md). Bus-off counter bytes are not exposed as valid error counters.
 By default, verified CAN errors keep the controller running. Set `isolate_can_errors=1` to stop the affected channel on its first reported CAN error. See [ERROR_MODES.md](ERROR_MODES.md) for recovery behavior, switching modes and validation scope.
 Extended-ID hardware acceptance filters remain unfinished. Hardware timestamps use raw device time; see [TIMESTAMPS.md](TIMESTAMPS.md).
 

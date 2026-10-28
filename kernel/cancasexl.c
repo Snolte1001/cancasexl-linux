@@ -504,21 +504,37 @@ static int record(struct xl *x, const u8 *r)
  struct sk_buff *skb;
  canid_t id;
  unsigned int ch = r[1] & 0x7f;
- if (ch > 1) return -EPROTO;
+ if (ch > 1) {
+  dev_err(&x->usb->dev, "RX record rejected: invalid channel=%u tag=0x%02x\n", ch, r[0]);
+  return -EPROTO;
+ }
  c = netdev_priv(x->net[ch]);
  if (r[1] & 0x80) { c->net->stats.rx_over_errors++; return -EOVERFLOW; }
  diagnostic_record(c, r);
  if (r[0] == 2) return can_error(c, r);
  if (r[0] == 4) return controller_status(c, r);
  if (r[0] != 1) return 0;
- if (r[14] > 8 || (r[15] & ~0x05)) return -EPROTO;
+ if (r[14] > 8 || (r[15] & ~0x05)) {
+  dev_err(&x->usb->dev, "RX record rejected: channel=%u length=%u flags=0x%02x\n",
+          ch + 1, r[14], r[15]);
+  return -EPROTO;
+ }
  id = get_unaligned_le32(r + 10);
- if ((id & ~CAN_EFF_FLAG) > ((id & CAN_EFF_FLAG) ? CAN_EFF_MASK : CAN_SFF_MASK)) return -EPROTO;
+ if ((id & ~CAN_EFF_FLAG) > ((id & CAN_EFF_FLAG) ? CAN_EFF_MASK : CAN_SFF_MASK)) {
+  dev_err(&x->usb->dev, "RX record rejected: channel=%u invalid CAN ID=0x%08x\n", ch + 1, id);
+  return -EPROTO;
+ }
  if (r[15] & 0x04) id |= CAN_RTR_FLAG;
  if (!c->active || c->closing) return 0;
  if (r[15] & 0x01) {
   if (!c->pending || c->sent.can_id != id || c->sent.len != r[14] ||
-      (!(id & CAN_RTR_FLAG) && memcmp(c->sent.data, r + 16, r[14]))) return -EPROTO;
+      (!(id & CAN_RTR_FLAG) && memcmp(c->sent.data, r + 16, r[14]))) {
+   dev_err(&x->usb->dev,
+           "TX receipt rejected: channel=%u pending=%u expected_id=0x%08x received_id=0x%08x expected_len=%u received_len=%u data_match=%u\n",
+           ch + 1, c->pending, c->sent.can_id, id, c->sent.len, r[14],
+           !!((id & CAN_RTR_FLAG) || !memcmp(c->sent.data, r + 16, r[14])));
+   return -EPROTO;
+  }
   /* The CAN echo helper delivers requested TX timestamps to MSG_ERRQUEUE.
    * Set the stamp before it consumes the echo skb. io protects ownership.
    */
@@ -541,6 +557,13 @@ static int record(struct xl *x, const u8 *r)
  return 0;
 }
 /* Validate entire transfer layout before processing any of its records. */
+static int rx_layout_fault(struct xl *x, unsigned int len, unsigned int off,
+                           const char *reason)
+{
+ dev_err(&x->usb->dev, "RX layout rejected: endpoint=0x82 actual=%u offset=%u reason=%s\n",
+         len, off, reason);
+ return -EPROTO;
+}
 static int parse_rx(struct xl *x, unsigned int len)
 {
  unsigned int off, n, size, i;
@@ -548,36 +571,51 @@ static int parse_rx(struct xl *x, unsigned int len)
  for (i = 0; i < 2; i++) {
   off = 0;
   while (off < len) {
-   if (len - off < 4) return -EPROTO;
+   if (len - off < 4) return rx_layout_fault(x, len, off, "truncated count");
    n = get_unaligned_le32(x->rx + off);
-   if (n > (len - off - 4) / 24) return -EPROTO;
+   if (n > (len - off - 4) / 24) return rx_layout_fault(x, len, off, "count exceeds transfer");
    size = 4 + n * 24;
    if (off == 0 && size == len) { /* compact transfer */ }
    else if (n == 21 && len - off >= 512) {
-    if (get_unaligned_le32(x->rx + off + 508)) return -EPROTO;
+    if (get_unaligned_le32(x->rx + off + 508)) return rx_layout_fault(x, len, off, "nonzero padding");
     size = 512;
-   } else if (n > 21 || size != len - off) return -EPROTO;
+   } else if (n > 21 || size != len - off) return rx_layout_fault(x, len, off, "invalid block size");
    if (i) for (unsigned int j = 0; j < n; j++) {
     ret = record(x, x->rx + off + 4 + j * 24);
-    if (ret) return ret;
+    if (ret) {
+     dev_err(&x->usb->dev, "RX record failed: endpoint=0x82 actual=%u offset=%u tag=0x%02x error=%d\n",
+             len, off + 4 + j * 24, x->rx[off + 4 + j * 24], ret);
+     return ret;
+    }
    }
    off += size;
   }
  }
- return len >= 4 ? 0 : -EPROTO;
+ return len >= 4 ? 0 : rx_layout_fault(x, len, 0, "missing count");
 }
 static int receive(struct xl *x, unsigned int timeout)
 {
- int actual = 0, ret;
+ int actual = 0, ret, status;
  ret = usb_bulk_msg(x->usb, usb_rcvbulkpipe(x->usb, 2), x->rx, RX_SIZE, &actual, timeout);
- if (ret && ret != -ETIMEDOUT) return ret;
+ if (ret && ret != -ETIMEDOUT) {
+  dev_err(&x->usb->dev, "USB RX failed: endpoint=0x82 status=%d actual=%d requested=%u timeout_ms=%u\n",
+          ret, actual, RX_SIZE, timeout);
+  return ret;
+ }
+ status = ret;
  if (actual) {
   ret = parse_rx(x, actual);
-  if (ret) return ret;
+  if (ret) {
+   dev_err(&x->usb->dev, "RX parsing failed: endpoint=0x82 usb_status=%d actual=%d error=%d\n",
+           status, actual, ret);
+   return ret;
+  }
   /* A valid count=0 packet means no events, not drain progress. */
   return actual == 4 && !get_unaligned_le32(x->rx) ? 0 : 1;
  }
- return ret == -ETIMEDOUT ? 0 : -EPROTO;
+ if (ret == -ETIMEDOUT) return 0;
+ dev_err(&x->usb->dev, "USB RX rejected: endpoint=0x82 status=0 actual=0 reason=empty successful transfer\n");
+ return -EPROTO;
 }
 static int drain(struct xl *x)
 {
@@ -619,7 +657,7 @@ static int worker(void *arg)
   for (i = 0; i < 2 && !ret; i++) {
    struct xl_chan *c = netdev_priv(x->net[i]);
    struct sk_buff *skb;
-   int actual;
+   int actual = 0;
    if (!c->active || c->closing) continue;
    ret = diagnostic_tick(c);
    if (ret || !c->active) continue;
@@ -647,6 +685,9 @@ static int worker(void *arg)
    c->pending_can_error = false;
    c->pending = true; c->deadline = jiffies + 5 * HZ;
    ret = usb_bulk_msg(x->usb, usb_sndbulkpipe(x->usb, 3 + i), x->tx, 24, &actual, 2000);
+   if (ret || actual != 24)
+    dev_err(&x->usb->dev, "USB TX failed: channel=%u endpoint=0x%02x status=%d actual=%d expected=24\n",
+            i + 1, 3 + i, ret, actual);
    if (!ret && actual != 24) ret = -EIO;
   }
   if (!ret) { ret = receive(x, 1); idle = ret == 0; if (ret > 0) ret = 0; }
@@ -1148,5 +1189,5 @@ static struct usb_driver xl_driver = {
 module_usb_driver(xl_driver);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Experimental CANcase XL runtime-only SocketCAN driver");
-MODULE_VERSION("0.1.19");
+MODULE_VERSION("0.1.20");
 

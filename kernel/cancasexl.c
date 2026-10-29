@@ -8,6 +8,7 @@
 #include <linux/kthread.h>
 #include <linux/mutex.h>
 #include <linux/can/dev.h>
+#include <linux/can/length.h>
 #include <linux/can/skb.h>
 #include <linux/can/error.h>
 #include <linux/delay.h>
@@ -503,6 +504,7 @@ static int record(struct xl *x, const u8 *r)
  struct can_frame *cf;
  struct sk_buff *skb;
  canid_t id;
+ u8 len;
  unsigned int ch = r[1] & 0x7f;
  if (ch > 1) {
   dev_err(&x->usb->dev, "RX record rejected: invalid channel=%u tag=0x%02x\n", ch, r[0]);
@@ -514,11 +516,12 @@ static int record(struct xl *x, const u8 *r)
  if (r[0] == 2) return can_error(c, r);
  if (r[0] == 4) return controller_status(c, r);
  if (r[0] != 1) return 0;
- if (r[14] > 8 || (r[15] & ~0x05)) {
-  dev_err(&x->usb->dev, "RX record rejected: channel=%u length=%u flags=0x%02x\n",
+ if (r[14] > CAN_MAX_RAW_DLC || (r[15] & ~0x05)) {
+  dev_err(&x->usb->dev, "RX record rejected: channel=%u dlc=%u flags=0x%02x\n",
           ch + 1, r[14], r[15]);
   return -EPROTO;
  }
+ len = can_cc_dlc2len(r[14]);
  id = get_unaligned_le32(r + 10);
  if ((id & ~CAN_EFF_FLAG) > ((id & CAN_EFF_FLAG) ? CAN_EFF_MASK : CAN_SFF_MASK)) {
   dev_err(&x->usb->dev, "RX record rejected: channel=%u invalid CAN ID=0x%08x\n", ch + 1, id);
@@ -527,12 +530,13 @@ static int record(struct xl *x, const u8 *r)
  if (r[15] & 0x04) id |= CAN_RTR_FLAG;
  if (!c->active || c->closing) return 0;
  if (r[15] & 0x01) {
-  if (!c->pending || c->sent.can_id != id || c->sent.len != r[14] ||
-      (!(id & CAN_RTR_FLAG) && memcmp(c->sent.data, r + 16, r[14]))) {
+  if (!c->pending || c->sent.can_id != id || can_get_cc_dlc(&c->sent, c->can.ctrlmode) != r[14] ||
+      (!(id & CAN_RTR_FLAG) && memcmp(c->sent.data, r + 16, len))) {
    dev_err(&x->usb->dev,
-           "TX receipt rejected: channel=%u pending=%u expected_id=0x%08x received_id=0x%08x expected_len=%u received_len=%u data_match=%u\n",
-           ch + 1, c->pending, c->sent.can_id, id, c->sent.len, r[14],
-           !!((id & CAN_RTR_FLAG) || !memcmp(c->sent.data, r + 16, r[14])));
+           "TX receipt rejected: channel=%u pending=%u expected_id=0x%08x received_id=0x%08x expected_dlc=%u received_dlc=%u data_match=%u\n",
+           ch + 1, c->pending, c->sent.can_id, id,
+           can_get_cc_dlc(&c->sent, c->can.ctrlmode), r[14],
+           !!((id & CAN_RTR_FLAG) || !memcmp(c->sent.data, r + 16, len)));
    return -EPROTO;
   }
   /* The CAN echo helper delivers requested TX timestamps to MSG_ERRQUEUE.
@@ -548,7 +552,8 @@ static int record(struct xl *x, const u8 *r)
   skb = alloc_can_skb(c->net, &cf);
   if (!skb) { c->net->stats.rx_dropped++; return 0; }
   skb_hwtstamps(skb)->hwtstamp = ns_to_ktime(xl_timestamp_ns(r));
-  cf->can_id = id; cf->len = r[14];
+  cf->can_id = id;
+  can_frame_set_cc_len(cf, r[14], c->can.ctrlmode);
   if (!(id & CAN_RTR_FLAG)) memcpy(cf->data, r + 16, cf->len);
   c->net->stats.rx_packets++;
   c->net->stats.rx_bytes += (id & CAN_RTR_FLAG) ? 0 : cf->len;
@@ -675,7 +680,7 @@ static int worker(void *arg)
    memset(x->tx, 0, 24); x->tx[0] = 1; x->tx[1] = i;
    put_unaligned_le16(0x106, x->tx + 2);
    put_unaligned_le32(c->sent.can_id & ~CAN_RTR_FLAG, x->tx + 10);
-   x->tx[14] = c->sent.len;
+   x->tx[14] = can_get_cc_dlc(&c->sent, c->can.ctrlmode);
    x->tx[15] = (c->sent.can_id & CAN_RTR_FLAG) ? 0x05 : 0x01;
    if (!(c->sent.can_id & CAN_RTR_FLAG))
     memcpy(x->tx + 16, c->sent.data, c->sent.len);
@@ -1129,6 +1134,7 @@ static int xl_probe(struct usb_interface *intf, const struct usb_device_id *id)
   spin_lock_init(&c->berr_lock);
   c->can.do_get_berr_counter = xl_get_berr_counter;
   c->can.do_set_mode = xl_set_mode;
+  c->can.ctrlmode_supported = CAN_CTRLMODE_CC_LEN8_DLC;
   c->can.state = CAN_STATE_STOPPED;
   c->can.bitrate_const = rates; c->can.bitrate_const_cnt = ARRAY_SIZE(rates);
   net->ethtool_ops = &xl_ethtool_ops;
@@ -1189,5 +1195,5 @@ static struct usb_driver xl_driver = {
 module_usb_driver(xl_driver);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Experimental CANcase XL runtime-only SocketCAN driver");
-MODULE_VERSION("0.1.20");
+MODULE_VERSION("0.1.21");
 

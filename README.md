@@ -1,7 +1,7 @@
 # CANcase XL Linux driver
 
 Experimental native SocketCAN driver for the Vector CANcase XL (USB 1248:1001).
-Kernel module version: **0.1.20**. Firmware: **8.7.16**.
+Kernel module version: **0.1.21**. Firmware: **8.7.16**.
 
 ## Branches
 
@@ -53,7 +53,7 @@ After installing, reconnect the device during a maintenance window and verify:
 ```sh
 cat /sys/module/cancasexl/version
 ```
-The loaded version must be `0.1.20`. Reapply the required channel bitrates and
+The loaded version must match the installed package version. Reapply the required channel bitrates and
 bring the interfaces up before resuming traffic.
 
 After a failure, save the surrounding kernel messages locally:
@@ -69,3 +69,39 @@ python3 tests/test_rx_diagnostics.py
 ```
 These compile the actual RX functions with a USB stub using `cc`. They do not
 replace building the complete module against the target kernel or hardware tests.
+
+## Classical CAN raw DLC (0.1.21)
+
+The USB record DLC field accepts values 0..15. DLC 9..15 represents eight
+payload bytes, not a malformed record. RX copies, byte statistics and TX
+receipt comparisons use bounded data lengths. Values above 15 remain errors.
+
+Both channels support the standard optional `cc-len8-dlc` control mode.
+With the mode off (default), DLC 9..15 is received as length 8 and TX uses
+the normal length. With the mode on, SocketCAN preserves DLC 9..15 in
+`can_frame.len8_dlc` and uses it for transmission when `len == 8`.
+RTR frames carry no payload; their requested length is capped at 8 and the
+raw DLC follows the same control-mode rules. TX receipts must match the
+actual transmitted DLC, including when two DLC values map to length 8.
+
+Example (substitute your serial number):
+```sh
+sudo ip link set can051969_1 down
+sudo ip link set can051969_1 type can bitrate 500000 cc-len8-dlc on
+sudo ip link set can051969_1 up
+candump -8 can051969_1
+```
+
+Use an external CAN sender on a terminated test bus. Send Classical CAN ID
+0x621 with eight bytes, first with DLC 8 and then DLC 15. Verify both arrive,
+the raw DLC is visible, and the channel remains ERROR-ACTIVE. Repeat on the
+other channel. Test DLC 0..15, standard/extended IDs, RTR and Linux TX before
+promoting this change to main.
+
+Windows CAN/USB comparison confirmed raw DLC 8 and 15 in TX, RX and TX
+receipt records. Linux hardware validation remains pending. No capture files
+are stored in the repository.
+
+Run `python3 tests/test_classic_dlc.py` for 256 synthetic RX/echo combinations
+covering both channels, control mode on/off, standard/extended IDs, data/RTR
+and DLC 0..15, plus rejection of all byte values above 15.

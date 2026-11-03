@@ -1,7 +1,7 @@
 # CANcase XL Linux driver
 
 Experimental native SocketCAN driver for the Vector CANcase XL (USB 1248:1001).
-Kernel module version: **0.1.19**. Firmware: **8.7.16**.
+Kernel module version: **0.1.21**. Firmware: **8.7.16**.
 
 This device has been marked as end-of-life by the manufacturer and is no longer supported in newer versions of CANalyzer, etc. 
 However, there are still many of these devices in use that can be given a new lease on life with SocketCAN on Linux using this driver. (Windows drivers for Python via XL-API are also available.) 
@@ -164,4 +164,59 @@ without printing success; inspect additional modprobe files, install rules and
 kernel command-line options. Earlier installation steps may already have completed;
 resolve the conflict and rerun the installer before reconnecting devices.
 
-The driver remains version 0.1.19; this change affects installation only.
+The module-option checks affect installation; the runtime error policy is configured separately.
+
+## Transport fault diagnostics (0.1.20)
+
+Fatal transport/protocol faults now log their origin before the existing
+device-wide stop. Messages distinguish USB RX/TX status and actual length,
+an empty successful RX transfer, invalid RX block layout, invalid CAN record
+fields, and mismatched TX receipts. Receipt diagnostics compare identifiers,
+lengths and payload equality without dumping payload bytes. Partial RX timeouts
+retain their original USB status in parser-failure messages.
+
+This is a diagnostic change, not a transport recovery fix. Failure policy,
+normal polling, CAN error handling and bus-off restart behavior are unchanged.
+No additional module option is needed. Normal traffic does not produce these
+new messages.
+
+After installing, reconnect the device during a maintenance window and verify:
+```sh
+cat /sys/module/cancasexl/version
+```
+The loaded version must match the installed package version. Reapply the required channel bitrates and
+bring the interfaces up before resuming traffic.
+
+After a failure, save the surrounding kernel messages locally:
+```sh
+sudo journalctl -k -b --no-pager
+```
+Include the diagnostic lines preceding `transport/protocol fault`.
+Do not commit hardware logs to this repository.
+
+
+## Classical CAN raw DLC (0.1.21)
+
+The USB record DLC field accepts values 0..15. DLC 9..15 represents eight
+payload bytes, not a malformed record. RX copies, byte statistics and TX
+receipt comparisons use bounded data lengths. Values above 15 remain errors.
+
+Both channels support the standard optional `cc-len8-dlc` control mode.
+With the mode off (default), DLC 9..15 is received as length 8 and TX uses
+the normal length. With the mode on, SocketCAN preserves DLC 9..15 in
+`can_frame.len8_dlc` and uses it for transmission when `len == 8`.
+RTR frames carry no payload; their requested length is capped at 8 and the
+raw DLC follows the same control-mode rules. TX receipts must match the
+actual transmitted DLC, including when two DLC values map to length 8.
+
+Example (substitute your serial number):
+```sh
+sudo ip link set can051969_1 down
+sudo ip link set can051969_1 type can bitrate 500000 cc-len8-dlc on
+sudo ip link set can051969_1 up
+candump -8 can051969_1
+```
+
+Hardware validation confirmed DLC 8 and 15 reception and transmission on both channels at 500 kbit/s, with external CANalyzer comparison. With `cc-len8-dlc off`, DLC 15 is received as length 8. Additional testing was reported successful before promotion to main. This does not establish hardware coverage of every DLC, identifier type, RTR combination or bitrate.
+
+Synthetic regression tests remain on the `testing` branch. No hardware logs or captures are stored in this repository.

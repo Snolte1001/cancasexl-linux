@@ -1,7 +1,7 @@
 # CANcase XL Linux driver
 
 Experimental native SocketCAN driver for the Vector CANcase XL (USB 1248:1001).
-Kernel module version: **0.1.21**. Firmware: **8.7.16**.
+Kernel module version: **0.1.22**. Firmware: **8.7.16**.
 
 This device has been marked as end-of-life by the manufacturer and is no longer supported in newer versions of CANalyzer, etc. 
 However, there are still many of these devices in use that can be given a new lease on life with SocketCAN on Linux using this driver. (Windows drivers for Python via XL-API are also available.) 
@@ -220,3 +220,21 @@ candump -8 can051969_1
 Hardware validation confirmed DLC 8 and 15 reception and transmission on both channels at 500 kbit/s, with external CANalyzer comparison. With `cc-len8-dlc off`, DLC 15 is received as length 8. Additional testing was reported successful before promotion to main. This does not establish hardware coverage of every DLC, identifier type, RTR combination or bitrate.
 
 Synthetic regression tests remain on the `testing` branch. No hardware logs or captures are stored in this repository.
+
+## Unplug after a transport fault (0.1.22)
+
+After a transport/protocol fault (or with the device marked dead) the USB worker
+thread previously returned on its own. Unplugging the adapter then made
+`xl_disconnect()` call `kthread_stop()` on an already exited thread: a
+use-after-free that produced a kernel oops (NULL pointer dereference in
+`kthread_stop` from the USB hub worker) and could hang the display and shutdown.
+The worker now stays idle until `kthread_stop()` wakes it.
+
+Behavior with a healthy device, the fault policy and the replug requirement are
+unchanged. After a fault the interfaces still report the transport fault and the
+device must be replugged.
+
+Hardware validation: unplugging during a running measurement on a Raspberry Pi
+CM4 (kernel 6.18.60+rpt-rpi-v8) no longer crashes; the system stays usable. A
+synthetic worker test on the `testing` branch fails with 0.1.21 and passes with
+0.1.22.

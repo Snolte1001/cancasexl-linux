@@ -657,7 +657,18 @@ static int worker(void *arg)
   int ret = 0;
   bool idle = false, tx_busy = false;
   mutex_lock(&x->io);
-  if (x->dead || x->fault) { mutex_unlock(&x->io); break; }
+  if (x->dead || x->fault) {
+   mutex_unlock(&x->io);
+   /* Stay alive until kthread_stop(): xl_disconnect() always stops this
+    * thread, and stopping a kthread that already returned is a
+    * use-after-free (NULL dereference in kthread_stop after a transport
+    * fault followed by unplug). */
+   set_current_state(TASK_INTERRUPTIBLE);
+   if (!kthread_should_stop())
+    schedule();
+   __set_current_state(TASK_RUNNING);
+   continue;
+  }
   if (!x->ready) { mutex_unlock(&x->io); msleep(10); continue; }
   for (i = 0; i < 2 && !ret; i++) {
    struct xl_chan *c = netdev_priv(x->net[i]);
@@ -1195,5 +1206,5 @@ static struct usb_driver xl_driver = {
 module_usb_driver(xl_driver);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Experimental CANcase XL runtime-only SocketCAN driver");
-MODULE_VERSION("0.1.21");
+MODULE_VERSION("0.1.22");
 

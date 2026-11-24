@@ -1,7 +1,7 @@
 # CANcase XL Linux driver
 
 Experimental native SocketCAN driver for the Vector CANcase XL (USB 1248:1001).
-Kernel module version: **0.1.21**. Firmware: **8.7.16**.
+Kernel module version: **0.1.22**. Firmware: **8.7.16**.
 
 ## Branches
 
